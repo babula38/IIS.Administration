@@ -35,7 +35,11 @@ Param(
     
     [parameter()]
     [switch]
-    $DeleteBinding
+    $DeleteBinding,
+
+    [parameter()]
+    [boolean]
+    $IncludeDefaultCors = $true
 )
 
 Set-StrictMode -Off
@@ -86,16 +90,13 @@ function CheckUninstallParameters() {
 
 function Install() {
     $adminRoot = $Path
-
-       
     $latest = .\ver.ps1 Get-Latest -Path $adminRoot
-
     if ($latest -ne $null) {
         Upgrade
     }
     else {
         $ServiceName = .\globals.ps1 DEFAULT_SERVICE_NAME
-        .\install.ps1 -Path $adminRoot -Port $Port -SkipVerification:$SkipVerification -DistributablePath $DistributablePath -CertHash $CertHash -Version $Version -ServiceName $ServiceName
+        .\install.ps1 -Path $adminRoot -Port $Port -SkipVerification:$SkipVerification -DistributablePath $DistributablePath -CertHash $CertHash -Version $Version -ServiceName $ServiceName -IncludeDefaultCors:$IncludeDefaultCors
     }
 }
 
@@ -123,7 +124,7 @@ function Upgrade() {
 
     $installed = $false
     try {
-        .\install.ps1 -Path $adminRoot -Version $Version -SkipVerification:$SkipVerification -ServiceName $ServiceName -Port 0 -DistributablePath $DistributablePath -CertHash $CertHash
+        .\install.ps1 -Path $adminRoot -Version $Version -SkipVerification:$SkipVerification -ServiceName $ServiceName -Port 0 -DistributablePath $DistributablePath -CertHash $CertHash -IncludeDefaultCors:$IncludeDefaultCors
         $installed = $true
         .\migrate.ps1 -Source $latest -Destination $(Join-Path $adminRoot $Version)
     }
@@ -135,7 +136,7 @@ function Upgrade() {
         throw $_
     }
 
-    .\uninstall.ps1 -Path $latest
+    .\uninstall.ps1 -Path $latest -KeepGroups
 }
 
 function Uninstall() {
@@ -206,7 +207,7 @@ function Uninstall() {
                 Write-Host "Successfully removed installation folder."
             }
             else {
-                Write-Warning "Cannot remove the installation folder because it is not empty"
+                Write-Warning "Cannot remove the installation folder $dir because it is not empty"
             }
         }
         Catch

@@ -4,6 +4,7 @@
 
 namespace Microsoft.IIS.Administration.Tests
 {
+    using Newtonsoft.Json;
     using Newtonsoft.Json.Linq;
     using System;
     using System.Collections.Generic;
@@ -13,21 +14,29 @@ namespace Microsoft.IIS.Administration.Tests
     using System.ServiceProcess;
     using System.Threading.Tasks;
     using Xunit;
+    using Xunit.Abstractions;
 
     public class Monitoring
     {
         private const string SiteName = "ServerMonitorTestSite";
-        private static readonly string SitePath = Path.Combine(Configuration.TEST_ROOT_PATH, SiteName);
+        private static readonly string SitePath = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, SiteName);
+
+        private ITestOutputHelper _output;
+
+        public Monitoring(ITestOutputHelper output)
+        {
+            _output = output;
+        }
 
         [Fact]
-        public async Task MonitorWebServer()
+        public async Task WebServer()
         {
             using (HttpClient client = ApiHttpClient.Create()) {
                 Sites.EnsureNoSite(client, SiteName);
 
                 int port = Utils.GetAvailablePort();
 
-                JObject site = Sites.CreateSite(client, SiteName, port, SitePath);
+                JObject site = Sites.CreateSite(_output, client, SiteName, port, SitePath);
 
                 try {
                     using (var stresser = new SiteStresser($"http://localhost:{port}"))
@@ -36,11 +45,16 @@ namespace Microsoft.IIS.Administration.Tests
                         int tries = 0;
                         JObject snapshot = null;
 
-                        while (tries < 7) {
+                        while (tries < 10) {
 
                             snapshot = serverMonitor.Current;
 
-                            if (snapshot != null && snapshot["requests"].Value<long>("per_sec") > 0) {
+                            _output.WriteLine("Waiting for webserver to track requests per sec and processes");
+                            _output.WriteLine(snapshot == null ? "Snapshot is null" : snapshot.ToString(Formatting.Indented));
+
+                            if (snapshot != null
+                                && snapshot["requests"].Value<long>("per_sec") > 0
+                                && snapshot["cpu"].Value<long>("threads") > 0) {
                                 break;
                             }
 
@@ -48,14 +62,21 @@ namespace Microsoft.IIS.Administration.Tests
                             tries++;
                         }
 
+                        _output.WriteLine("Validating webserver monitoring data");
+                        _output.WriteLine(snapshot.ToString(Formatting.Indented));
+
                         Assert.True(snapshot["requests"].Value<long>("per_sec") > 0);
                         Assert.True(snapshot["network"].Value<long>("total_bytes_sent") > 0);
                         Assert.True(snapshot["network"].Value<long>("total_bytes_recv") > 0);
+                        Assert.True(snapshot["network"].Value<long>("total_connection_attempts") > 0);
                         Assert.True(snapshot["requests"].Value<long>("total") > 0);
                         Assert.True(snapshot["memory"].Value<long>("private_working_set") > 0);
-                        Assert.True(snapshot["memory"].Value<long>("available") > 0);
+                        Assert.True(snapshot["memory"].Value<long>("system_in_use") > 0);
+                        Assert.True(snapshot["memory"].Value<long>("installed") > 0);
                         Assert.True(snapshot["cpu"].Value<long>("threads") > 0);
                         Assert.True(snapshot["cpu"].Value<long>("processes") > 0);
+                        Assert.True(snapshot["cpu"].Value<long>("percent_usage") >= 0);
+                        Assert.True(snapshot["cpu"].Value<long>("system_percent_usage") >= 0);
 
                         Assert.True(serverMonitor.ErrorCount == 0);
                     }
@@ -74,18 +95,21 @@ namespace Microsoft.IIS.Administration.Tests
 
                 int port = Utils.GetAvailablePort();
 
-                JObject site = Sites.CreateSite(client, SiteName, port, SitePath);
+                JObject site = Sites.CreateSite(_output, client, SiteName, port, SitePath);
 
                 try {
                     using (var stresser = new SiteStresser($"http://localhost:{port}"))
                     using (var serverMonitor = new ServerMonitor())
                     using (var sc = new ServiceController("W3SVC")) {
 
-                        await Task.Delay(2000);
+                        JObject snapshot = await serverMonitor.GetSnapshot(5000);
 
-                        JObject snapshot = serverMonitor.Current;
+                        _output.WriteLine("Validating server is running worker processes");
+                        _output.WriteLine(snapshot.ToString(Formatting.Indented));
 
                         Assert.True(snapshot["cpu"].Value<long>("processes") > 0);
+
+                        _output.WriteLine("Restarting IIS");
 
                         sc.Stop();
                         DateTime stopTime = DateTime.Now;
@@ -104,6 +128,9 @@ namespace Microsoft.IIS.Administration.Tests
                         while (tries < 5) {
 
                             snapshot = serverMonitor.Current;
+
+                            _output.WriteLine("checking for requests / sec counter increase after startup");
+                            _output.WriteLine(snapshot.ToString(Formatting.Indented));
 
                             if (snapshot["requests"].Value<long>("per_sec") > 0) {
                                 break;
@@ -160,7 +187,7 @@ namespace Microsoft.IIS.Administration.Tests
 
                     if (site == null) {
 
-                        site = Sites.CreateSite(client, name, Utils.GetAvailablePort(), SitePath, true, pools[i]);
+                        site = Sites.CreateSite(_output, client, name, Utils.GetAvailablePort(), SitePath, true, pools[i]);
                     }
 
                     sites[i] = site;
@@ -175,7 +202,12 @@ namespace Microsoft.IIS.Administration.Tests
                 var start = DateTime.Now;
                 var timeout = TimeSpan.FromSeconds(20);
 
-                while (DateTime.Now - start < timeout && serverMonitor.Current["cpu"].Value<long>("processes") < numberSites) {
+                _output.WriteLine($"Created {numberSites} sites");
+                _output.WriteLine($"Waiting for all site processes to start");
+
+                while (DateTime.Now - start <= timeout && 
+                       (serverMonitor.Current["cpu"].Value<long>("processes") < numberSites ||
+                       serverMonitor.Current["network"].Value<long>("total_bytes_sent") == 0)) {
                     await Task.Delay(1000);
                 }
 
@@ -185,11 +217,19 @@ namespace Microsoft.IIS.Administration.Tests
 
                 JObject snapshot = serverMonitor.Current;
 
+                _output.WriteLine("Validating webserver monitoring data");
+                _output.WriteLine(snapshot.ToString(Formatting.Indented));
+
                 Assert.True(snapshot["network"].Value<long>("total_bytes_sent") > 0);
                 Assert.True(snapshot["network"].Value<long>("total_bytes_recv") > 0);
+                Assert.True(snapshot["network"].Value<long>("total_connection_attempts") > 0);
                 Assert.True(snapshot["requests"].Value<long>("total") > 0);
                 Assert.True(snapshot["memory"].Value<long>("private_working_set") > 0);
-                Assert.True(snapshot["memory"].Value<long>("available") > 0);
+                Assert.True(snapshot["memory"].Value<long>("system_in_use") > 0);
+                Assert.True(snapshot["memory"].Value<long>("installed") > 0);
+                Assert.True(snapshot["cpu"].Value<long>("threads") > 0);
+                Assert.True(snapshot["cpu"].Value<long>("processes") > 0);
+                Assert.True(snapshot["cpu"].Value<long>("percent_usage") >= 0);
                 Assert.True(snapshot["cpu"].Value<long>("threads") > 0);
                 Assert.True(snapshot["cpu"].Value<long>("processes") > 0);
 
@@ -222,7 +262,7 @@ namespace Microsoft.IIS.Administration.Tests
         }
 
         [Fact]
-        public async Task MonitorWebSite()
+        public async Task WebSite()
         {
             const string name = SiteName + "z";
 
@@ -237,7 +277,7 @@ namespace Microsoft.IIS.Administration.Tests
                 JObject site = Sites.GetSite(client, name);
 
                 if (site == null) {
-                    site = Sites.CreateSite(client, name, Utils.GetAvailablePort(), SitePath, true, pool);
+                    site = Sites.CreateSite(_output, client, name, Utils.GetAvailablePort(), SitePath, true, pool);
                 }
 
                 int port = site["bindings"].ToObject<IEnumerable<JObject>>().First().Value<int>("port");
@@ -266,9 +306,11 @@ namespace Microsoft.IIS.Administration.Tests
                         Assert.True(snapshot["requests"].Value<long>("per_sec") > 0);
                         Assert.True(snapshot["network"].Value<long>("total_bytes_sent") > 0);
                         Assert.True(snapshot["network"].Value<long>("total_bytes_recv") > 0);
+                        Assert.True(snapshot["network"].Value<long>("total_connection_attempts") > 0);
                         Assert.True(snapshot["requests"].Value<long>("total") > 0);
                         Assert.True(snapshot["memory"].Value<long>("private_working_set") > 0);
-                        Assert.True(snapshot["memory"].Value<long>("available") > 0);
+                        Assert.True(snapshot["memory"].Value<long>("system_in_use") > 0);
+                        Assert.True(snapshot["memory"].Value<long>("installed") > 0);
                         Assert.True(snapshot["cpu"].Value<long>("threads") > 0);
                         Assert.True(snapshot["cpu"].Value<long>("processes") > 0);
 
@@ -284,14 +326,14 @@ namespace Microsoft.IIS.Administration.Tests
         }
 
         [Fact]
-        public async Task MonitorAppPool()
+        public async Task AppPool()
         {
             using (HttpClient client = ApiHttpClient.Create()) {
                 Sites.EnsureNoSite(client, SiteName);
 
                 int port = Utils.GetAvailablePort();
 
-                JObject site = Sites.CreateSite(client, SiteName, port, SitePath);
+                JObject site = Sites.CreateSite(_output, client, SiteName, port, SitePath);
 
                 try {
                     JObject appPool = client.Get(Utils.Self((JObject)site["application_pool"]));
@@ -302,9 +344,13 @@ namespace Microsoft.IIS.Administration.Tests
 
                         JObject snapshot = serverMonitor.Current;
 
+                        _output.WriteLine("Validing monitoring data for application pool");
+                        _output.WriteLine(snapshot.ToString(Formatting.Indented));
+
                         Assert.True(snapshot["requests"].Value<long>("total") > 0);
                         Assert.True(snapshot["memory"].Value<long>("private_working_set") > 0);
-                        Assert.True(snapshot["memory"].Value<long>("available") > 0);
+                        Assert.True(snapshot["memory"].Value<long>("system_in_use") > 0);
+                        Assert.True(snapshot["memory"].Value<long>("installed") > 0);
                         Assert.True(snapshot["cpu"].Value<long>("threads") > 0);
                         Assert.True(snapshot["cpu"].Value<long>("processes") > 0);
 
@@ -321,6 +367,9 @@ namespace Microsoft.IIS.Administration.Tests
                             await Task.Delay(1000);
                             tries++;
                         }
+
+                        _output.WriteLine("Validing monitoring data for application pool");
+                        _output.WriteLine(snapshot.ToString(Formatting.Indented));
 
                         Assert.True(snapshot["requests"].Value<long>("per_sec") > 0);
 
@@ -339,7 +388,7 @@ namespace Microsoft.IIS.Administration.Tests
         private bool _stop = false;
         private Task _t;
         private JObject _snapshot;
-        private string _url = $"{Configuration.TEST_SERVER_URL}/api/webserver/monitoring";
+        private string _url = $"{Configuration.Instance().TEST_SERVER_URL}/api/webserver/monitoring";
 
         public ServerMonitor(string url = null)
         {
@@ -365,13 +414,29 @@ namespace Microsoft.IIS.Administration.Tests
                         var result = await responseMessage.Content.ReadAsStringAsync();
                         _snapshot = JObject.Parse(result);
                     }
-                    catch (Exception e) {
+                    catch {
                         ErrorCount++;
                     }
 
                     await Task.Delay(1000);
                 }
             }
+        }
+
+        public async Task<JObject> GetSnapshot(int timeout)
+        {
+            var end = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeout);
+
+            while (DateTime.UtcNow < end) {
+
+                if (Current != null) {
+                    return Current;
+                }
+
+                await Task.Delay(1000);
+            }
+
+            throw new Exception("Timed out getting server monitor snapshot.");
         }
 
         public void Dispose()
@@ -401,7 +466,7 @@ namespace Microsoft.IIS.Administration.Tests
                     try {
                         await client.GetAsync(Uri);
                     }
-                    catch (Exception e) {
+                    catch {
                     }
 
                     await Task.Delay(20);

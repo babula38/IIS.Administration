@@ -138,6 +138,9 @@ namespace Microsoft.IIS.Administration.WebServer.AppPools
                         case Status.Started:
                             appPool.Start();
                             break;
+                        case Status.Recycling:
+                            appPool.Recycle();
+                            break;
                     }
                 }
                 catch(COMException e) {
@@ -189,7 +192,7 @@ namespace Microsoft.IIS.Administration.WebServer.AppPools
                 return true;
             }
 
-            return await _authorization.AuthorizeAsync(Context.User, null, "system");
+            return (await _authorization.AuthorizeAsync(Context.User, null, "system")).Succeeded;
         }
     }
 }

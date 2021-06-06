@@ -11,16 +11,16 @@ namespace Microsoft.IIS.Administration.Monitoring
     using System.Threading;
     using System.Threading.Tasks;
 
-    public class CounterProvider : ICounterProvider, IDisposable
+    sealed class CounterProvider : ICounterProvider, IDisposable
     {
         private static readonly TimeSpan CacheExpiration = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan ScanFrequency = TimeSpan.FromSeconds(5);
         private MemoryCache _cache;
         private Timer _cacheEvicter;
         private ConcurrentCacheHelper _concurrentCacheHelper;
-        private CounterFinder _counterFinder = new CounterFinder();
+        private CounterFinder _counterFinder;
 
-        public CounterProvider()
+        public CounterProvider(CounterFinder finder)
         {
             //
             // Cache strategy
@@ -34,9 +34,16 @@ namespace Microsoft.IIS.Administration.Monitoring
                 CompactOnMemoryPressure = false
             });
 
+            _counterFinder = finder;
+
             _concurrentCacheHelper = new ConcurrentCacheHelper(_cache);
 
             _cacheEvicter = new Timer(TimerCallback, null, ScanFrequency, ScanFrequency);
+        }
+
+        public Task<IEnumerable<string>> GetInstances(string category)
+        {
+            return Task.FromResult(_counterFinder.GetInstances(category));
         }
 
         public async Task<IEnumerable<IPerfCounter>> GetCounters(string category, string instance, IEnumerable<string> counterNames)
@@ -44,7 +51,7 @@ namespace Microsoft.IIS.Administration.Monitoring
             string key = category + instance;
 
             CounterMonitor monitor = _concurrentCacheHelper.GetOrCreate<CounterMonitor>(category,
-                () => new CounterMonitor(Enumerable.Empty<IPerfCounter>()),
+                () => new CounterMonitor(_counterFinder, Enumerable.Empty<IPerfCounter>()),
                 new MemoryCacheEntryOptions() {
                     SlidingExpiration = CacheExpiration
                 }.RegisterPostEvictionCallback(PostEvictionCallback)
@@ -56,11 +63,21 @@ namespace Microsoft.IIS.Administration.Monitoring
 
                 counters = _counterFinder.GetCounters(category, instance, counterNames);
 
-                monitor.AddCounters(counters);
+                if (counters.Count() > 0) {
 
-                _cache.Set(key, counters, new MemoryCacheEntryOptions() {
-                    SlidingExpiration = CacheExpiration
-                }.RegisterPostEvictionCallback(PostEvictionCallback));
+                    bool didCreate = _concurrentCacheHelper.GetOrCreate(
+                        key,
+                        () => counters,
+                        new MemoryCacheEntryOptions() {
+                            SlidingExpiration = CacheExpiration
+                        }.RegisterPostEvictionCallback(PostEvictionCallback),
+                        out IEnumerable<IPerfCounter> entry
+                    );
+
+                    if (didCreate) {
+                        monitor.AddCounters(entry);
+                    }
+                }
             }
 
             try {
@@ -103,11 +120,13 @@ namespace Microsoft.IIS.Administration.Monitoring
 
                 IEnumerable<IPerfCounter> counters = _counterFinder.GetSingletonCounters(category, counterNames);
 
-                monitor = new CounterMonitor(counters);
-
-                _cache.Set(category, monitor, new MemoryCacheEntryOptions() {
-                    SlidingExpiration = CacheExpiration
-                }.RegisterPostEvictionCallback(PostEvictionCallback));
+                monitor = _concurrentCacheHelper.GetOrCreate(
+                    category,
+                    () => new CounterMonitor(_counterFinder, counters),
+                    new MemoryCacheEntryOptions() {
+                        SlidingExpiration = CacheExpiration
+                    }.RegisterPostEvictionCallback(PostEvictionCallback)
+                );
             }
 
             try {

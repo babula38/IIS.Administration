@@ -13,7 +13,9 @@ Param(
                  "Set-Acls",
                  "Add-SelfRights",
                  "Set-AclForced",
-                 "Add-FullControl")]
+                 "Add-FullControl",
+                 "EnsureLocalGroupMember")]
+
     [string]
     $Command,
     
@@ -91,11 +93,18 @@ function GetLocalGroup($groupName) {
             $group = $localAd.Children.Find($groupName, 'group')
         }
         catch {
+            Write-Warning $_.Exception.Message
             #COM Exception if group doesn't exit
         }
     }
     else {
         $group = Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue
+    }
+
+    if ($group) {
+        Write-Verbose "Group $groupName exists."
+    } else {
+        Write-Verbose "Group $groupName does not exist"
     }
 
     return $group;
@@ -123,7 +132,7 @@ function GroupEquals($group, $_name, $desc) {
 # Creates a local group with the specified name and description.
 # Name: The name for the local group.
 # Description: The description for the local group.
-function CreateLocalGroup($_name, $desc) {
+function CreateLocalGroup($_name, $desc, $skipIfExists = $false) {
 
 	if ([System.String]::IsNullOrEmpty($_name)) {
 		throw "Name cannot be null"
@@ -131,7 +140,11 @@ function CreateLocalGroup($_name, $desc) {
 
     $group = GetLocalGroup $_name;
 
-    if($group -ne $null) {
+    if($group) {
+        if ($skipIfExists) {
+            Write-Verbose "Group $_name already exists, returning..."
+            return $group
+        }
         throw "Group $_name already exists"
     }
 
@@ -141,13 +154,25 @@ function CreateLocalGroup($_name, $desc) {
         $group = $localAd.Children.Add($_name, 'group')
         $group.Properties["Description"].Value = $desc
     
-        $group.CommitChanges()
+        $group.CommitChanges() | Out-Null
     }
     else {
-        $group = New-LocalGroup -Name $_name
+        ## https://github.com/microsoft/IIS.Administration/issues/275
+        ## Either
+        ## 1. Something was creating the local group between line 141 and here
+        ## 2. Something created the local group but the group policy is not updated
+        ## causing $group object being null when checked, but New-LocalGroup actually failed
+        try {
+            $group = New-LocalGroup -Name $_name
+        } catch {
+            Write-Warning "New-LocalGroup -Name $_name threw exception $_, ignoring because group name would be used to add local group member"
+        }
         net localgroup $_name /comment:$desc | Out-Null
     }
 
+    if (!$group) {
+        Write-Warning "CreateLocalGroup is returnning null, the group might not exist."
+    }
     return $group
 }
 
@@ -157,17 +182,18 @@ function RemoveLocalGroup($_name) {
 
 	if ([System.String]::IsNullOrEmpty($_name)) {
 		throw "Name cannot be null"
-	}
+    }
 
     $g = GetLocalGroup $_name
 
     if($g -ne $null) {
         if (-not($(GroupCommandletsAvailable))) {
             $localAd = GetLocalAd
-            $localAd.Children.Remove($g.Path)
+            return $localAd.Children.Remove($g.Path)
         }
         else {
             Remove-LocalGroup -Name $_name
+            return $true
         }
     }
 }
@@ -180,17 +206,16 @@ function CurrentAdUser {
 # Adds a user to a local group.
 # AdPath: the representation of the current user. Provided by CurrentAdUser.
 # Group: The group to add the user to.
-function AddUserToGroup($userPath, $_group) {
+function AddUserToGroup($userPath, $_group, $groupName) {
 
 	if ([System.String]::IsNullOrEmpty($userPath)) {
 		throw "User path cannot be null"
 	}
 
-	if ($_group -eq $null) {
-		throw "Group cannot be null"
-	}
-
     if (-not($(GroupCommandletsAvailable))) {
+        if (!$_group) {
+            throw "Group cannot be null"
+        }
         $userPath = 'WinNT://' + $userPath.Replace("\", "/")
 
         try {
@@ -199,16 +224,18 @@ function AddUserToGroup($userPath, $_group) {
         catch {
             # HRESULT -2147023518
             # The specified account name is already a member of the group.
-            if($_.Exception.InnerException -eq $null -or ($_.Exception.InnerException.HResult -ne -2147023518 -and $_.Exception.InnerException.ErrorCode -ne -2147023518)) {
+            if($_.Exception.InnerException -or ($_.Exception.InnerException.HResult -ne -2147023518 -and $_.Exception.InnerException.ErrorCode -ne -2147023518)) {
                 throw $_.Exception
             }
         }
     }
     else {
-        $existingMember = Get-LocalGroupMember -Group $_group.name | where {$_.Name -eq $userPath}
-
-        if ($existingMember -eq $null) {
-            Add-LocalGroupMember -Name $($_group.name) -Member $($userPath)
+        $existingMember = Get-LocalGroupMember -Group $groupName | Where {$_.Name -eq $userPath}
+        if (!$existingMember) {
+            Write-Verbose "Adding member $userPath to group $groupName"
+            Add-LocalGroupMember -Name $($groupName) -Member $($userPath)
+        } else {
+            Write-Verbose "Member $userPath already exists in $groupName"
         }
     }
 }
@@ -370,7 +397,7 @@ function _Set-AclForced($_path, $_acl, $_recurse) {
         }
         catch {
             # Fail state: owner will be the Administrators group
-            Write-Warning "Could not restore owner for $($item.fullname)"
+            Write-Warning "Could not restore owner for $($item.fullname): $($_.Exception.Message)"
         }
 
         # Revert any token privileges adjusted
@@ -404,8 +431,28 @@ function Add-FullControl($_path, $_identity, $_recurse) {
 						[System.Security.AccessControl.AccessControlType]::Allow)
     
     $acl = Get-Acl -Path $_path
-    $acl.SetAccessRule($fullControl)
+
+    $account = $_identity.Translate([System.Security.Principal.NTAccount])
+
+    foreach ($access in $acl.Access) {
+
+        if ($access.FileSystemRights -eq [System.Security.AccessControl.FileSystemRights]::FullControl -and
+            $access.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+            $access.IdentityReference -eq $account) {
+
+            return
+        }
+    }
+    
+    $acl.AddAccessRule($fullControl)
+
     Set-AclForced $_path $acl $_recurse
+}
+
+## ensure the member/group exists in the specified group
+function EnsureLocalGroupMember($groupName, $description, $AdPath) {
+    $group = CreateLocalGroup $groupName $description $true
+    return AddUserToGroup $AdPath $group $groupName
 }
 
 switch($Command)
@@ -418,6 +465,10 @@ switch($Command)
     {
         return CreateLocalGroup $Name $Description
     }
+    "EnsureLocalGroupMember"
+    {
+        return EnsureLocalGroupMember $Name $Description $AdPath
+    }
     "RemoveLocalGroup"
     {
         return RemoveLocalGroup $Name
@@ -428,7 +479,7 @@ switch($Command)
     }
     "AddUserToGroup"
     {
-        return AddUserToGroup $AdPath $Group
+        return AddUserToGroup $AdPath $Group $Group.Name
     }
     "GroupEquals"
     {

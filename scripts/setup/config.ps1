@@ -45,7 +45,11 @@ Param (
     
     [parameter()]
     [string]
-    $Destination
+    $Destination,
+
+    [parameter()]
+    [switch]
+    $IncludeDefaultCors
 )
 
 # Name of file we place installation data in
@@ -111,6 +115,33 @@ function Remove($_path) {
     }
 }
 
+## create "IIS Administration API Owners" group if it does not exist, and and the current user to the group if not already added
+## Note that this method also includes a phase the indiciates the group is created by the installer so it can be removed if the application
+## is uninistalled
+function Ensure-IncludesIisAdminApiOwners($settings) {
+    $groupName = .\globals.ps1 'IIS_ADMIN_API_OWNERS'
+    $groupDescription = .\globals.ps1 'IIS_ADMIN_API_OWNERS_DESCRIPTION'
+    $currentAdUser = .\security.ps1 CurrentAdUser
+    .\security.ps1 EnsureLocalGroupMember -AdPath $currentAdUser -Name $groupName -Description $groupDescription
+
+    ## NOTES for supporting powershell version < 2.0.0
+    ## Do not use $settings.security.users.administrators.Contains method
+    ## Do not use `+=` to append $groupName; i.e: `$settings.security.users.administrators += $groupName`
+    ## because we use `System.Web.Script.Serialization.JavaScriptSerializer` to serialize the config
+    ## any value computed with `+=` operator would cause the serializer to determine it as circular dependency
+    if (!($settings.security.users.administrators | Where-Object { $_ -eq $groupName })) {
+        $arr = [System.Collections.ArrayList]$settings.security.users.administrators
+        $arr.Add($groupName)
+        $settings.security.users.administrators = $arr
+    }
+
+    if (!($settings.security.users.owners | Where-Object { $_ -eq $groupName })) {
+        $arr = [System.Collections.ArrayList]$settings.security.users.owners
+        $arr.Add($groupName)
+        $settings.security.users.owners = $arr
+    }
+}
+
 # Writes install time information into the appsettings.json file
 # AppSettingsPath: The full path to the appsettings.json file
 function Write-AppSettings($_appSettingsPath, $_port) {
@@ -122,9 +153,11 @@ function Write-AppSettings($_appSettingsPath, $_port) {
     }
 
     $settings = .\json.ps1 Get-JsonContent -Path $_appSettingsPath
+    Ensure-IncludesIisAdminApiOwners $settings
 
-    $settings.security.users.administrators += $(.\security.ps1 CurrentAdUser)
-    $settings.security.users.owners += $(.\security.ps1 CurrentAdUser)
+    if ($IncludeDefaultCors) {
+        $settings.cors.rules += @{ "origin" = "https://manage.iis.net"; "allow" = $true }
+    }
 
     if ($_port -ne $null -and $_port -ne $(.\globals.ps1 DEFAULT_PORT)) {
         .\json.ps1 Add-Property -JsonObject $settings -Name "urls" -Value "https://*:$_port"
@@ -149,6 +182,7 @@ function Migrate-AppSettings($_source, $_destination) {
     if ($oldAppSettings.administrators -ne $null) {
         .\json.ps1 Remove-Property -JsonObject $oldAppSettings -Name "administrators"
     }
+    Ensure-IncludesIisAdminApiOwners $oldAppSettings
 
     .\json.ps1 Set-JsonContent -Path $(Join-Path $Destination $userFiles["appsettings.json"]) -JsonObject $oldAppSettings
 }
@@ -226,6 +260,7 @@ function Write-Config($obj, $_path) {
             $port = [int]::parse($sPort)
         }
         catch {
+            Write-Warning $_.Exception.Message
             throw "Misconfigured 'urls' in appsettings: $($appsettings.urls)."
         }
     }

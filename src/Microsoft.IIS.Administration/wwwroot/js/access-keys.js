@@ -12,7 +12,12 @@ $(document).ready(function () {
 
     $("#showNewForm").click(function () {
         $("#tokenForm").hide();
+
+        // show the newTokenForm
         $("#modal, #newTokenForm").show();
+
+        // set input-focus to the first control of the newTokenForm
+        $("#purpose").focus(); 
     });
 
     $("#tokenGenerator").submit(function () {
@@ -40,7 +45,7 @@ $(document).ready(function () {
         }
     })
 
-    if ($("#key").html() != "") {
+    if ($("#key").val() != "") {
         $("#newTokenForm").hide();
         $("#modal, #tokenForm").show();
         $("#tokenForm #ok").focus();
@@ -62,6 +67,19 @@ $(document).ready(function () {
         var seconds = Math.ceil((exp - utc_now) / 1000);
 
         $("#newTokenForm input[name='expiration']").val(seconds || "");
+    })
+
+    $("#key").ready(function () {
+        var copyText = document.getElementById("key");
+        copyText.select();
+    })
+
+    $("#clipboardCopy").click(function () {
+        var copyText = document.getElementById("key");
+        copyText.select();
+
+        /* Copy to clipboard */
+        document.execCommand('copy');
     })
 
     //

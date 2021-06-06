@@ -5,7 +5,7 @@
 
 <!DOCTYPE html>
 
-<html>
+<html lang="en">
 <head>
     <meta name="viewport" content="width=device-width" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'self'; script-src 'self'; style-src 'self';">
@@ -22,14 +22,15 @@
             <ul>
                 <li class="explorer"><a href="/">API Explorer</a></li>
                 <li class="tkn"><a title="Manage API Keys" href="/security/tokens">Access Keys</a></li>
-                <li class="connect" id="signOut"><a title="Forget me! Access Token will be required to connect again.">Exit</a></li>
+                <li class="connect" id="signOut"><a tabindex="0" title="Forget me! Access Token will be required to connect again.">Exit</a></li>
             </ul>
         </div>
     </div>
     <div class="content">
         @RenderBody()
     </div>
-    <script src="~/lib/jquery-3.2.0.min/index.js"></script>
+    <script src="~/lib/jquery-3.2.0.min/jquery.min.js"
+            integrity="sha384-o9KO9jVK1Q4ybtHgJCCHfgQrTRNlkT6SL3j/qMuBMlDw3MmFrgrOHCOaIMJWGgK5"></script>
     <script src="~/js/main.js"></script>
     @RenderSection("scripts", false)
 </body>

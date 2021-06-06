@@ -5,54 +5,93 @@
 namespace Microsoft.IIS.Administration {
     using AspNetCore.Builder;
     using AspNetCore.Hosting;
+    using Microsoft.AspNetCore.Hosting.WindowsServices;
+    using Microsoft.AspNetCore.Server.HttpSys;
     using Microsoft.Extensions.Configuration;
     using Microsoft.Extensions.DependencyInjection;
-    using Microsoft.IIS.Administration.WindowsService;
-    using Net.Http.Server;
+    using Microsoft.Extensions.Logging;
+    using Microsoft.Extensions.Logging.EventLog;
     using Serilog;
+    using System;
+    using System.Diagnostics;
 
     public class Program {
-        public static void Main(string[] args) {
-            //
-            // Build Config
-            var configHelper = new ConfigurationHelper(args);
-            IConfiguration config = configHelper.Build();
+        public const string EventSourceName = "Microsoft IIS Administration API";
 
-            //
-            // Host
-            using (var host = new WebHostBuilder()
-                .UseContentRoot(configHelper.RootPath)
-                .UseUrls("https://*:55539") // Config can override it. Use "urls":"https://*:55539"
-                .UseConfiguration(config)
-                .ConfigureServices(s => s.AddSingleton(config)) // Configuration Service
-                .UseStartup<Startup>()
-                .UseWebListener(o => {
+        public static void Main(string[] args) {
+            try
+            {
+                //
+                // Build Config
+                var configHelper = new ConfigurationHelper(args);
+                IConfiguration config = configHelper.Build();
+
+                //
+                // Initialize runAsAService local variable
+                string serviceName = config.GetValue<string>("serviceName")?.Trim();
+                bool runAsAService = !string.IsNullOrEmpty(serviceName);
+
+                //
+                // Host
+                using (var host = new WebHostBuilder()
+                    .UseContentRoot(configHelper.RootPath)
+                    .ConfigureLogging((hostingContext, logging) => {
+                        logging.AddConfiguration(hostingContext.Configuration.GetSection("Logging"));
+
+                    //
+                    // Console log is not available in running as a Service
+                    if (!runAsAService)
+                        {
+                            logging.AddConsole();
+                        }
+
+                        logging.AddDebug();
+                        logging.AddEventLog(new EventLogSettings()
+                        {
+                            SourceName = EventSourceName
+                        });
+                    })
+                    .UseUrls("https://*:55539") // Config can override it. Use "urls":"https://*:55539"
+                    .UseConfiguration(config)
+                    .ConfigureServices(s => s.AddSingleton(config)) // Configuration Service
+                    .UseStartup<Startup>()
+                    .UseHttpSys(o => {
                     //
                     // Kernel mode Windows Authentication
-                    o.ListenerSettings.Authentication.Schemes = AuthenticationSchemes.Negotiate | AuthenticationSchemes.NTLM;
+                    o.Authentication.Schemes = AuthenticationSchemes.Negotiate | AuthenticationSchemes.NTLM;
 
                     //
                     // Need anonymous to allow CORS preflight requests
                     // app.UseWindowsAuthentication ensures (if needed) the request is authenticated to proceed
-                    o.ListenerSettings.Authentication.AllowAnonymous = true;
-                })
-                .Build()
-                .UseHttps()) {
+                    o.Authentication.AllowAnonymous = true;
+                    })
+                    .Build()
+                    .UseHttps())
+                {
 
-                string serviceName = config.GetValue<string>("serviceName")?.Trim();
-
-                if (!string.IsNullOrEmpty(serviceName)) {
-                    //
-                    // Run as a Service
-                    Log.Information($"Running as service: {serviceName}");
-                    new ServiceHelper(serviceName).Run(token => host.Run(token))
-                                                  .Wait();
+                    if (runAsAService)
+                    {
+                        //
+                        // Run as a Service
+                        Log.Information($"Running as service: {serviceName}");
+                        host.RunAsService();
+                    }
+                    else
+                    {
+                        //
+                        // Run interactive
+                        host.Run();
+                    }
                 }
-                else {
-                    //
-                    // Run interactive
-                    host.Run();
+            }
+            catch (Exception ex)
+            {
+                using (var shutdownLog = new EventLog("Application"))
+                {
+                    shutdownLog.Source = Program.EventSourceName;
+                    shutdownLog.WriteEntry($"Microsoft IIS Administration API has shutdown unexpectively because the error: {ex.ToString()}", EventLogEntryType.Error);
                 }
+                throw ex;
             }
         }
     }

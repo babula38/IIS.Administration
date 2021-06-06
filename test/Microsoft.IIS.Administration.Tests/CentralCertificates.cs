@@ -18,11 +18,12 @@ namespace Microsoft.IIS.Administration.Tests
     using System.Diagnostics;
     using System.Threading.Tasks;
 
+    // NOTE: This test intermittently fails because it tries to disable/enable Windows Features. Details: https://github.com/Microsoft/IIS.Administration/issues/236
     public class CentralCertificates
     {
-        private static readonly string CERTIFICATES_API_PATH = $"{Configuration.TEST_SERVER_URL}/api/certificates";
-        private static readonly string STORES_API_PATH = $"{Configuration.TEST_SERVER_URL}/api/certificates/stores";
-        private static readonly string FOLDER_PATH = Path.Combine(Configuration.TEST_ROOT_PATH, FOLDER_NAME);
+        private static readonly string CERTIFICATES_API_PATH = $"{Configuration.Instance().TEST_SERVER_URL}/api/certificates";
+        private static readonly string STORES_API_PATH = $"{Configuration.Instance().TEST_SERVER_URL}/api/certificates/stores";
+        private static readonly string FOLDER_PATH = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, FOLDER_NAME);
         private const string NAME = "IIS Central Certificate Store";
         private const string FOLDER_NAME = "CentralCertStore";
         private const string CERT_NAME = "IISAdminLocalTest";
@@ -36,7 +37,7 @@ namespace Microsoft.IIS.Administration.Tests
 
         public static string CcsTestUsername {
             get {
-                return Configuration.Raw.Value<string>("ccs_user") ?? "IisAdminCcsTestR";
+                return Configuration.Instance().CCSUser;
             }
         }
 
@@ -72,7 +73,7 @@ namespace Microsoft.IIS.Administration.Tests
             };
 
             using (var client = ApiHttpClient.Create()) {
-                JObject webserver = client.Get($"{Configuration.TEST_SERVER_URL}/api/webserver/");
+                JObject webserver = client.Get($"{Configuration.Instance().TEST_SERVER_URL}/api/webserver/");
                 string ccsLink = Utils.GetLink(webserver, "central_certificates");
                 HttpResponseMessage res = client.PostRaw(ccsLink, (object)ccsInfo);
                 Assert.True((int)res.StatusCode == 403);
@@ -97,7 +98,7 @@ namespace Microsoft.IIS.Administration.Tests
             };
 
             using (var client = ApiHttpClient.Create()) {
-                JObject webserver = client.Get($"{Configuration.TEST_SERVER_URL}/api/webserver/");
+                JObject webserver = client.Get($"{Configuration.Instance().TEST_SERVER_URL}/api/webserver/");
                 string ccsLink = Utils.GetLink(webserver, "central_certificates");
                 HttpResponseMessage res = client.PostRaw(ccsLink, (object)ccsInfo);
                 Assert.True((int)res.StatusCode == 400);
@@ -146,7 +147,7 @@ namespace Microsoft.IIS.Administration.Tests
             const string siteName = "CcsBindingTestSite";
             using (var client = ApiHttpClient.Create()) {
                 Sites.EnsureNoSite(client, siteName);
-                site = Sites.CreateSite(client, siteName, Utils.GetAvailablePort(), Sites.TEST_SITE_PATH);
+                site = Sites.CreateSite(_output, client, siteName, Utils.GetAvailablePort(), Sites.TEST_SITE_PATH);
                 Assert.NotNull(site);
 
                 try {
@@ -207,7 +208,7 @@ namespace Microsoft.IIS.Administration.Tests
             };
 
             using (var client = ApiHttpClient.Create()) {
-                JObject webserver = client.Get($"{Configuration.TEST_SERVER_URL}/api/webserver/");
+                JObject webserver = client.Get($"{Configuration.Instance().TEST_SERVER_URL}/api/webserver/");
                 string ccsLink = Utils.GetLink(webserver, "central_certificates");
                 return client.Post(ccsLink, (object)ccsInfo) != null;
             }
@@ -216,7 +217,7 @@ namespace Microsoft.IIS.Administration.Tests
         private bool Disable()
         {
             using (var client = ApiHttpClient.Create()) {
-                JObject webserver = client.Get($"{Configuration.TEST_SERVER_URL}/api/webserver/");
+                JObject webserver = client.Get($"{Configuration.Instance().TEST_SERVER_URL}/api/webserver/");
                 string ccsLink = Utils.GetLink(webserver, "central_certificates");
                 return client.Delete(ccsLink);
             }
@@ -225,7 +226,7 @@ namespace Microsoft.IIS.Administration.Tests
         private JObject GetCcs()
         {
             using (var client = ApiHttpClient.Create()) {
-                JObject webserver = client.Get($"{Configuration.TEST_SERVER_URL}/api/webserver/");
+                JObject webserver = client.Get($"{Configuration.Instance().TEST_SERVER_URL}/api/webserver/");
                 return Utils.FollowLink(client, webserver, "central_certificates");
             }
         }
@@ -331,7 +332,6 @@ namespace Microsoft.IIS.Administration.Tests
 
             user.Username = CentralCertificates.CcsTestUsername;
             user.Password = Guid.NewGuid().ToString();
-
             await CreateLocalUser(user.Username, user.Password);
 
             return user;
@@ -339,8 +339,9 @@ namespace Microsoft.IIS.Administration.Tests
 
         private static Task CreateLocalUser(string username, string password)
         {
+            var createScriptLocation = Path.Combine(Configuration.Instance().PROJECT_PATH, "scripts", "tests", "Create-User.ps1");
             // User creation already implemented in powershell install scripts, vs many interop calls
-            return RunProcess("PowerShell.exe", $@"""c:\\src\\repos\\iis.administration\\scripts\tests\\Create-User.ps1"" -Name '{username}' -Password '{password}'");
+            return RunProcess("PowerShell.exe", $@"""{createScriptLocation}"" -Name '{username}' -Password '{password}'");
         }
 
         private static Task RunProcess(string tool, string arguments)

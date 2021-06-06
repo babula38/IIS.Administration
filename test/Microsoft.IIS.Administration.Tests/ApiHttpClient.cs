@@ -14,7 +14,7 @@ namespace Microsoft.IIS.Administration.Tests
 
         public static HttpClient Create()
         {
-            return Create(Configuration.TEST_SERVER_URL);
+            return Create(Configuration.Instance().TEST_SERVER_URL);
         }
 
         public static HttpClient Create(string serverUri)
@@ -23,6 +23,7 @@ namespace Microsoft.IIS.Administration.Tests
             handler.ServerCertificateCustomValidationCallback = (request, cert, chain, errors) => {
                 return true;
             };
+            handler.UseDefaultCredentials = true;
 
             return new ApiHttpClient(serverUri, handler, true);
         }
@@ -34,7 +35,6 @@ namespace Microsoft.IIS.Administration.Tests
 
         private void Init(string serverUri)
         {
-
             var key = Utils.GetApiKey(serverUri, this);
 
             _keyId = key.Value<string>("id");

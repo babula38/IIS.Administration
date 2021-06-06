@@ -6,16 +6,18 @@ namespace Microsoft.IIS.Administration.WebServer.Monitoring
 {
     using Microsoft.IIS.Administration.Monitoring;
     using Microsoft.Web.Administration;
+    using System;
     using System.Collections.Generic;
     using System.Linq;
     using System.Threading.Tasks;
 
-    class AppPoolMonitor : IAppPoolMonitor
+    sealed class AppPoolMonitor : IAppPoolMonitor
     {
-        CounterProvider _counterProvider;
+        ICounterProvider _counterProvider;
         private Dictionary<int, string> _processCounterInstances = null;
+        private static readonly int _processorCount = Environment.ProcessorCount;
 
-        public AppPoolMonitor(CounterProvider provider)
+        public AppPoolMonitor(ICounterProvider provider)
         {
             _counterProvider = provider;
         }
@@ -41,6 +43,8 @@ namespace Microsoft.IIS.Administration.WebServer.Monitoring
 
             snapshot.Name = pool.Name;
             snapshot.ProcessCount = pool.GetWorkerProcesses().Count();
+
+            long percentCpu = 0;
 
             foreach (IPerfCounter counter in await Query(pool)) {
 
@@ -136,12 +140,16 @@ namespace Microsoft.IIS.Administration.WebServer.Monitoring
                 else if (counter.CategoryName.Equals(MemoryCounterNames.Category)) {
                     switch (counter.Name) {
                         case MemoryCounterNames.AvailableBytes:
-                            snapshot.AvailableBytes += counter.Value;
+                            snapshot.AvailableMemory += counter.Value;
                             break;
                         default:
                             break;
                     }
                 }
+
+                snapshot.PercentCpuTime = percentCpu / _processorCount;
+                snapshot.TotalInstalledMemory = MemoryData.TotalInstalledMemory;
+                snapshot.SystemMemoryInUse = MemoryData.TotalInstalledMemory - snapshot.AvailableMemory;
             }
 
             return snapshot;

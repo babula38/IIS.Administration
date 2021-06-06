@@ -5,16 +5,21 @@
 namespace Microsoft.IIS.Administration.WebServer.Monitoring
 {
     using Microsoft.IIS.Administration.Monitoring;
+    using System;
     using System.Collections.Generic;
+    using System.Diagnostics;
     using System.Linq;
     using System.Threading.Tasks;
 
-    class WebServerMonitor : IWebServerMonitor
+    sealed class WebServerMonitor : IWebServerMonitor
     {
+        private const string TotalInstance = "_Total";
+        private static readonly int _processorCount = Environment.ProcessorCount;
         private IEnumerable<int> _webserverProcesses;
-        private CounterProvider _provider;
+        private ICounterProvider _provider;
+        private Dictionary<int, string> _processCounterMap;
 
-        public WebServerMonitor(CounterProvider provider)
+        public WebServerMonitor(ICounterProvider provider)
         {
             _provider = provider;
         }
@@ -35,6 +40,7 @@ namespace Microsoft.IIS.Administration.WebServer.Monitoring
             long requestsSec = 0;
             long totalRequests = 0;
             long percentCpuTime = 0;
+            long systemPercentCpuTime = 0;
             long pageFaultsSec = 0;
             long handleCount = 0;
             long privateBytes = 0;
@@ -143,6 +149,16 @@ namespace Microsoft.IIS.Administration.WebServer.Monitoring
                     }
                 }
 
+                else if (counter.CategoryName.Equals(ProcessorCounterNames.Category)) {
+                    switch (counter.Name) {
+                        case ProcessorCounterNames.IdleTime:
+                            systemPercentCpuTime += 100 - counter.Value;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
                 else if (counter.CategoryName.Equals(MemoryCounterNames.Category)) {
                     switch (counter.Name) {
                         case MemoryCounterNames.AvailableBytes:
@@ -210,7 +226,8 @@ namespace Microsoft.IIS.Administration.WebServer.Monitoring
             snapshot.ActiveRequests = activeRequests;
             snapshot.RequestsSec = requestsSec;
             snapshot.TotalRequests = totalRequests;
-            snapshot.PercentCpuTime = percentCpuTime;
+            snapshot.PercentCpuTime = percentCpuTime / _processorCount;
+            snapshot.SystemPercentCpuTime = systemPercentCpuTime;
             snapshot.HandleCount = handleCount;
             snapshot.PrivateBytes = privateBytes;
             snapshot.ThreadCount = threadCount;
@@ -221,7 +238,9 @@ namespace Microsoft.IIS.Administration.WebServer.Monitoring
             snapshot.FileCacheHits = fileCacheHits;
             snapshot.FileCacheMisses = fileCacheMisses;
             snapshot.PageFaultsSec = pageFaultsSec;
-            snapshot.AvailableBytes = availableBytes;
+            snapshot.AvailableMemory = availableBytes;
+            snapshot.TotalInstalledMemory = MemoryData.TotalInstalledMemory;
+            snapshot.SystemMemoryInUse = MemoryData.TotalInstalledMemory - availableBytes;
             snapshot.FileCacheMemoryUsage = fileCacheMemoryUsage;
             snapshot.CurrentFilesCached = currentFilesCached;
             snapshot.CurrentUrisCached = currentUrisCached;
@@ -257,29 +276,64 @@ namespace Microsoft.IIS.Administration.WebServer.Monitoring
 
         private async Task<IEnumerable<IPerfCounter>> GetCounters()
         {
-            const string TotalInstance = "_Total";
-            var counterFinder = new CounterFinder();
             List<IPerfCounter> counters = new List<IPerfCounter>();
-            _webserverProcesses = ProcessUtil.GetWebserverProcessIds().OrderBy(id => id);
+            _webserverProcesses = ProcessUtil.GetWebserverProcessIds();
 
             // Only use total counter if instances are available
-            if (counterFinder.GetInstances(WebSiteCounterNames.Category).Any(i => i != TotalInstance)) {
+            if ((await _provider.GetInstances(WebSiteCounterNames.Category)).Any(i => i != TotalInstance)) {
                 counters.AddRange(await _provider.GetCounters(WebSiteCounterNames.Category, TotalInstance, WebSiteCounterNames.CounterNames));
             }
 
-            if (counterFinder.GetInstances(WorkerProcessCounterNames.Category).Any(i => i != TotalInstance)) {
+            if ((await _provider.GetInstances(WorkerProcessCounterNames.Category)).Any(i => i != TotalInstance)) {
                 counters.AddRange(await _provider.GetCounters(WorkerProcessCounterNames.Category, TotalInstance, WorkerProcessCounterNames.CounterNames));
             }
-            
+
             counters.AddRange(await _provider.GetSingletonCounters(MemoryCounterNames.Category, MemoryCounterNames.CounterNames));
 
             counters.AddRange(await _provider.GetSingletonCounters(CacheCounterNames.Category, CacheCounterNames.CounterNames));
-            
-            foreach (string instance in await ProcessUtil.GetProcessCounterInstances(_webserverProcesses)) {
-                counters.AddRange(await _provider.GetCounters(ProcessCounterNames.Category, instance, ProcessCounterNames.CounterNames));
+
+            counters.AddRange(await _provider.GetCounters(ProcessorCounterNames.Category, TotalInstance, ProcessorCounterNames.CounterNames));
+
+            if (_processCounterMap == null) {
+                _processCounterMap = await ProcessUtil.GetProcessCounterMap(_provider, "w3wp");
+            }
+
+            foreach (int processId in _webserverProcesses) {
+
+                string instanceName = await TryGetProcessCounterInstance(processId);
+
+                if (instanceName != null) {
+                    counters.AddRange(await _provider.GetCounters(ProcessCounterNames.Category, instanceName, ProcessCounterNames.CounterNames));
+                }
             }
 
             return counters;
+        }
+
+        private async Task<string> TryGetProcessCounterInstance(int id)
+        {
+            if (!_processCounterMap.TryGetValue(id, out string instanceName)) {
+
+                Process p = Process.GetProcessById(id);
+
+                if (p != null) {
+
+                    var map = await ProcessUtil.GetProcessCounterMap(_provider, p.ProcessName);
+
+                    foreach (int key in map.Keys) {
+                        _processCounterMap[key] = map[key];
+                    }
+
+                    if (_processCounterMap.TryGetValue(id, out instanceName)) {
+                        return instanceName;
+                    }
+                }
+            }
+            else {
+                return instanceName;
+            }
+
+            return null;
         }
     }
 }

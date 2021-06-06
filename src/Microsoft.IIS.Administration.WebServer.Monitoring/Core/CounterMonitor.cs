@@ -15,17 +15,18 @@ namespace Microsoft.IIS.Administration.Monitoring
     /// Concurrent collection of performance counters that can be refreshed to populate performance counter values
     /// </summary>
 
-    public sealed class CounterMonitor : IDisposable
+    sealed class CounterMonitor : IDisposable
     {
         private readonly TimeSpan RefreshRate = TimeSpan.FromMilliseconds(1000);
         private Dictionary<IPerfCounter, PdhCounterHandle> _counters = new Dictionary<IPerfCounter, PdhCounterHandle>();
         private PdhQueryHandle _query;
         private DateTime _lastCalculatedTime;
-        private CounterFinder _counterFinder = new CounterFinder();
+        private CounterFinder _counterFinder;
         private ReaderWriterLockSlim _lock = new ReaderWriterLockSlim();
 
-        public CounterMonitor(IEnumerable<IPerfCounter> counters)
+        public CounterMonitor(CounterFinder finder, IEnumerable<IPerfCounter> counters)
         {
+            _counterFinder = finder;
             AddCounters(counters);
         }
 
@@ -71,13 +72,15 @@ namespace Microsoft.IIS.Administration.Monitoring
                 return;
             }
 
-            _lock.EnterWriteLock();
-
-            try {
-                await DoRefresh();
-            }
-            finally {
-                _lock.ExitWriteLock();
+            //
+            // Immediately return if can't obtain lock
+            if (_lock.TryEnterWriteLock(0)) {
+                try {
+                    await DoRefresh();
+                }
+                finally {
+                    _lock.ExitWriteLock();
+                }
             }
         }
 
@@ -86,6 +89,7 @@ namespace Microsoft.IIS.Administration.Monitoring
             _lock.EnterWriteLock();
 
             try {
+
                 DoAddCounters(counters);
             }
             finally {
@@ -95,13 +99,22 @@ namespace Microsoft.IIS.Administration.Monitoring
 
         public void RemoveCounters(IEnumerable<IPerfCounter> counters)
         {
+            IEnumerable<PdhCounterHandle> removedCounters = null;
+
             _lock.EnterWriteLock();
 
             try {
-                DoRemoveCounters(counters);
+                removedCounters = DoRemoveCounters(counters);
             }
             finally {
                 _lock.ExitWriteLock();
+            }
+
+            //
+            // References not available to other threads, no need to guard
+            
+            foreach (var counterHandle in removedCounters) {
+                counterHandle.Dispose();
             }
         }
 
@@ -210,7 +223,7 @@ namespace Microsoft.IIS.Administration.Monitoring
             foreach (var counter in counters) {
                 PdhCounterHandle hCounter;
 
-                result = Pdh.PdhAddCounterW(_query, counter.Path, IntPtr.Zero, out hCounter);
+                result = Pdh.PdhAddEnglishCounterW(_query, counter.Path, IntPtr.Zero, out hCounter);
                 if (result == Pdh.PDH_CSTATUS_NO_OBJECT ||
                     result == Pdh.PDH_CSTATUS_NO_COUNTER) {
                     missingCounters.Add(counter);
@@ -228,19 +241,22 @@ namespace Microsoft.IIS.Administration.Monitoring
             }
         }
 
-        private void DoRemoveCounters(IEnumerable<IPerfCounter> counters)
+        private IEnumerable<PdhCounterHandle> DoRemoveCounters(IEnumerable<IPerfCounter> counters)
         {
             PdhCounterHandle hCounter = null;
+            List<PdhCounterHandle> removedCounters = new List<PdhCounterHandle>();
 
             foreach (var counter in counters) {
 
                 if (_counters.TryGetValue(counter, out hCounter)) {
 
-                    hCounter.Dispose();
-
                     _counters.Remove(counter);
+
+                    removedCounters.Add(hCounter);
                 }
             }
+
+            return removedCounters;
         }
     }
 }

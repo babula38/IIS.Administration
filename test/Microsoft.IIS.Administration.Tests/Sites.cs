@@ -22,13 +22,15 @@ namespace Microsoft.IIS.Administration.Tests
 
     public class Sites
     {
+        private const string OIDServerAuth = "1.3.6.1.5.5.7.3.1";
         private const string TEST_SITE_NAME = "test_site";
         private const int TEST_PORT = 50306;
         private ITestOutputHelper _output;
 
-        public static readonly string TEST_SITE_PATH = Path.Combine(Configuration.TEST_ROOT_PATH, TEST_SITE_NAME);
-        public static readonly string SITE_URL = $"{Configuration.TEST_SERVER_URL}/api/webserver/websites";
-        public static readonly string CertificatesUrl = $"{Configuration.TEST_SERVER_URL}/api/certificates";
+        public static readonly string TEST_SITE_PATH = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, TEST_SITE_NAME);
+        public static readonly string SITE_URL = $"{Configuration.Instance().TEST_SERVER_URL}/api/webserver/websites";
+
+        public static readonly string CertificatesUrl = $"{Configuration.Instance().TEST_SERVER_URL}/api/certificates";
 
         public Sites(ITestOutputHelper output)
         {
@@ -42,7 +44,7 @@ namespace Microsoft.IIS.Administration.Tests
 
                 EnsureNoSite(client, TEST_SITE_NAME);
                 
-                JObject site = CreateSite(client, TEST_SITE_NAME, TEST_PORT, TEST_SITE_PATH);
+                JObject site = CreateSite(_output, client, TEST_SITE_NAME, TEST_PORT, TEST_SITE_PATH);
                 Assert.NotNull(site);
 
                 _output.WriteLine("Create Site success.");
@@ -63,7 +65,7 @@ namespace Microsoft.IIS.Administration.Tests
             using (HttpClient client = ApiHttpClient.Create()) {
 
                 EnsureNoSite(client, TEST_SITE_NAME);
-                JObject site = CreateSite(client, TEST_SITE_NAME, TEST_PORT, Configuration.TEST_ROOT_PATH);
+                JObject site = CreateSite(_output, client, TEST_SITE_NAME, TEST_PORT, Configuration.Instance().TEST_ROOT_PATH);
                 JObject cachedSite = new JObject(site);
 
                 WaitForStatus(client, ref site);
@@ -71,7 +73,7 @@ namespace Microsoft.IIS.Administration.Tests
                 Assert.True(site != null);
 
                 site["server_auto_start"] = !site.Value<bool>("server_auto_start");
-                site["physical_path"] = Configuration.TEST_ROOT_PATH;
+                site["physical_path"] = Configuration.Instance().TEST_ROOT_PATH;
                 site["enabled_protocols"] = site.Value<string>("enabled_protocols").Equals("http", StringComparison.OrdinalIgnoreCase) ? "https" : "http";
 
                 // If site status is unknown then we don't know if it will be started or stopped when it becomes available
@@ -103,13 +105,9 @@ namespace Microsoft.IIS.Administration.Tests
                     certificate = GetCertificate(client)
                 }));
 
-                string result;
                 string body = JsonConvert.SerializeObject(site);
-
-                Assert.True(client.Patch(Utils.Self(site), body, out result));
-
+                var result = client.AssertPatch(Utils.Self(site), body);
                 JObject newSite = JsonConvert.DeserializeObject<JObject>(result);
-
                 WaitForStatus(client, ref newSite);
 
                 Assert.True(Utils.JEquals<bool>(site, newSite, "server_auto_start"));
@@ -149,7 +147,7 @@ namespace Microsoft.IIS.Administration.Tests
 
             using (HttpClient client = ApiHttpClient.Create()) {
                 EnsureNoSite(client, TEST_SITE_NAME);
-                JObject site = CreateSite(client, TEST_SITE_NAME, TEST_PORT, TEST_SITE_PATH);
+                JObject site = CreateSite(_output, client, TEST_SITE_NAME, TEST_PORT, TEST_SITE_PATH);
 
                 var bindings = site.Value<JArray>("bindings");
                 bindings.Clear();
@@ -214,7 +212,7 @@ namespace Microsoft.IIS.Administration.Tests
             using (HttpClient client = ApiHttpClient.Create()) {
 
                 EnsureNoSite(client, TEST_SITE_NAME);
-                JObject site = CreateSite(client, TEST_SITE_NAME, TEST_PORT, TEST_SITE_PATH);
+                JObject site = CreateSite(_output, client, TEST_SITE_NAME, TEST_PORT, TEST_SITE_PATH);
 
                 var bindings = site.Value<JArray>("bindings");
                 bindings.Clear();
@@ -326,7 +324,7 @@ namespace Microsoft.IIS.Administration.Tests
             using (HttpClient client = ApiHttpClient.Create()) {
 
                 EnsureNoSite(client, TEST_SITE_NAME);
-                JObject site = CreateSite(client, TEST_SITE_NAME, TEST_PORT, TEST_SITE_PATH);
+                JObject site = CreateSite(_output, client, TEST_SITE_NAME, TEST_PORT, TEST_SITE_PATH);
 
                 var bindings = site.Value<JArray>("bindings");
                 bindings.Clear();
@@ -441,13 +439,16 @@ namespace Microsoft.IIS.Administration.Tests
             }
         }
 
-        private static bool CreateSite(HttpClient client, string testSite, out JObject site, bool createDirectoryIfNotExist = true)
+        private static bool CreateSite(ITestOutputHelper output, HttpClient client, string testSite, out JObject site, bool createDirectoryIfNotExist = true)
         {
             site = null;
             HttpContent content = new StringContent(testSite, Encoding.UTF8, "application/json");
             HttpResponseMessage response = client.PostAsync(SITE_URL, content).Result;
 
-            if (!Globals.Success(response)) {
+            if (!Globals.Success(response))
+            {
+                output.WriteLine("Non-Success response:");
+                output.WriteLine(response.Content.ReadAsStringAsync().Result);
                 return false;
             }
 
@@ -456,7 +457,7 @@ namespace Microsoft.IIS.Administration.Tests
             return true;
         }
 
-        public static JObject CreateSite(HttpClient client, string name, int port, string physicalPath, bool createDirectoryIfNotExist = true, JObject appPool = null)
+        public static JObject CreateSite(ITestOutputHelper output, HttpClient client, string name, int port, string physicalPath, bool createDirectoryIfNotExist = true, JObject appPool = null)
         {
             if (createDirectoryIfNotExist && !Directory.Exists(physicalPath)) {
                 Directory.CreateDirectory(physicalPath);
@@ -492,7 +493,7 @@ namespace Microsoft.IIS.Administration.Tests
 
             JObject result;
 
-            if(!CreateSite(client, siteStr, out result)) {
+            if(!CreateSite(output, client, siteStr, out result)) {
                 throw new Exception();
             }
 
@@ -504,27 +505,6 @@ namespace Microsoft.IIS.Administration.Tests
             if (!SiteExists(client, siteUri)) { throw new Exception("Can't delete test site because it doesn't exist."); }
             HttpResponseMessage response = client.DeleteAsync(siteUri).Result;
             return Globals.Success(response);
-        }
-
-        public static bool GetSites(HttpClient client, out List<JObject> sites)
-        {
-            string response = null;
-            sites = null;
-
-            if(!client.Get(SITE_URL, out response)) {
-                return false;
-            }
-
-            JObject jObj = JsonConvert.DeserializeObject<JObject>(response);
-
-            JArray sArr = jObj["websites"] as JArray;
-            sites = new List<JObject>();
-
-            foreach(JObject site in sArr) {
-                sites.Add(site);
-            }
-
-            return true;
         }
 
         public static JObject GetSite(HttpClient client, string name)
@@ -571,17 +551,22 @@ namespace Microsoft.IIS.Administration.Tests
             }
         }
 
-        private static JObject GetCertificate(HttpClient client)
+        private JObject GetCertificate(HttpClient client)
         {
-            string result;
-            if (!client.Get(CertificatesUrl + "?intended_purpose=server authentication", out result)) {
-                return null;
-            }
-
+            string result = client.AssertGet(CertificatesUrl + $"?intended_purpose={OIDServerAuth}");
             var certsObj = JObject.Parse(result);
-            var cert = certsObj.Value<JArray>("certificates").FirstOrDefault();
-
-            return cert != null ? cert.ToObject<JObject>() : null;
+            var allCerts = certsObj.Value<JArray>("certificates");
+            Assert.NotEmpty(allCerts);
+            var localCerts = allCerts.Where(c => c["subject"].Value<string>() == "CN=localhost");
+            Assert.NotEmpty(localCerts);
+            var defaultCertName = "Microsoft IIS Administration Server Certificate";
+            var cert = localCerts.FirstOrDefault(c => c["alias"].Value<string>() == defaultCertName);
+            if (cert == null)
+            {
+                cert = localCerts.First();
+                _output.WriteLine($"[WARNING]: unable to find {defaultCertName}, using {cert["alias"].Value<string>()} for tests instead.");
+            }
+            return cert.ToObject<JObject>();
         }
     }
 }

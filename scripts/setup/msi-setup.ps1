@@ -16,7 +16,11 @@ Param(
 
     [parameter()]
     [string]
-    $Version
+    $Version,
+
+    [parameter()]
+    [boolean]
+    $IncludeDefaultCors = $true
 )
 
 function Get-ScriptDirectory {
@@ -56,7 +60,7 @@ function Install() {
         $Port = 0
     }
 
-    .\install.ps1 -Path $adminRoot -Port $Port -DistributablePath $Path -Version $Version -ServiceName $ServiceName -DontCopy
+    .\install.ps1 -Path $adminRoot -Port $Port -DistributablePath $Path -Version $Version -ServiceName $ServiceName -IncludeDefaultCors:$IncludeDefaultCors -DontCopy
 }
 
 function Upgrade() {
@@ -81,11 +85,11 @@ function Upgrade() {
     
     $installed = $false
     try {
-        .\install.ps1 -Path $adminRoot -Port 0 -DistributablePath $Path -Version $Version -ServiceName $ServiceName -DontCopy
+        .\install.ps1 -Path $adminRoot -Port 0 -DistributablePath $Path -Version $Version -ServiceName $ServiceName -IncludeDefaultCors:$IncludeDefaultCors -DontCopy
         $installed = $true
         .\migrate.ps1 -Source $latest -Destination $(Join-Path $adminRoot $Version)
         try {            
-            .\uninstall.ps1 -Path $latest -KeepFiles
+            .\uninstall.ps1 -Path $latest -KeepFiles -KeepGroups
         }
         catch {
             # Uninstall must not throw
@@ -108,9 +112,22 @@ function Upgrade() {
 
 function Uninstall() {
     $adminRoot = Join-Path $Path $Version
-
-    .\uninstall.ps1 -Path $adminRoot -KeepFiles
+    .\uninstall.ps1 -Path $adminRoot -KeepFiles -DeleteCert -DeleteBinding
 }
+
+
+#
+# Set code page 437 in order to fix a globalization issue of Wix which is that all the powershell console output is broken in localized OS.
+try {
+    chcp 437
+}
+catch {
+    Write-Warning -Message "Fails to execute chcp 437"
+}
+
+#
+# To fix one of the reasons of the initial service start failure, we need to disable .Net Telemetry
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = 1
 
 Require-Script "acl-util"
 Require-Script "cache"

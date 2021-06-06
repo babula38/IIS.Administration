@@ -18,6 +18,7 @@ namespace Microsoft.IIS.Administration.Tests
     using System.Threading.Tasks;
     using Web.Administration;
     using Xunit;
+    using Xunit.Abstractions;
 
     public class Files
     {
@@ -26,6 +27,13 @@ namespace Microsoft.IIS.Administration.Tests
         private const string FILES_PATH = "/api/files";
         private const string LOCATIONS_PATH = "/api/files/locations";
         private const string WEBSERVER_FILES_PATH = "/api/webserver/files";
+
+        private ITestOutputHelper _output;
+
+        public Files(ITestOutputHelper output)
+        {
+            _output = output;
+        }
 
         [Fact]
         public void ResolveApplication()
@@ -217,9 +225,11 @@ namespace Microsoft.IIS.Administration.Tests
         [Fact]
         public void CreateEditDeleteFile()
         {
-            using (HttpClient client = ApiHttpClient.Create()) {
+            using (HttpClient client = ApiHttpClient.Create())
+            using (TestSiteContainer container = new TestSiteContainer(_output, client))
+            {
 
-                JObject site = Sites.GetSite(client, "Default Web Site");
+                JObject site = Sites.GetSite(client, container.SiteName);
 
                 // Create web file
                 var webFile = CreateWebFile(client, site, TEST_FILE_NAME);
@@ -257,7 +267,7 @@ namespace Microsoft.IIS.Administration.Tests
                     var location = locationHeader.First();
 
                     // Download file
-                    Assert.True(client.Get($"{Configuration.TEST_SERVER_URL}{location}", out result));
+                    Assert.True(client.Get($"{Configuration.Instance().TEST_SERVER_URL}{location}", out result));
                     Assert.True(result == testContent);
 
                     // Update file with empty content
@@ -282,16 +292,19 @@ namespace Microsoft.IIS.Administration.Tests
             string testContent = "Test content for copying files.";
             JObject copyInfo = null;
 
-            using (HttpClient client = ApiHttpClient.Create()) {
+            using (HttpClient client = ApiHttpClient.Create())
+            using(TestSiteContainer container = new TestSiteContainer(_output, client))
+            {
 
-                JObject site = Sites.GetSite(client, "Default Web Site");
+                JObject site = Sites.GetSite(client, container.SiteName);
 
                 var webFile = CreateWebFile(client, site, TEST_FILE_NAME);
 
                 var physicalPath = Environment.ExpandEnvironmentVariables(webFile["file_info"].Value<string>("physical_path"));
                 File.WriteAllText(physicalPath, testContent);
 
-                try {
+                try
+                {
                     var fileInfo = Utils.FollowLink(client, webFile.Value<JObject>("file_info"), "self");
                     var parent = fileInfo.Value<JObject>("parent");
 
@@ -309,7 +322,8 @@ namespace Microsoft.IIS.Administration.Tests
                     //
                     // Wait for copy to finish
                     HttpResponseMessage res = null;
-                    do {
+                    do
+                    {
                         res = client.GetAsync(Utils.Self(copyInfo)).Result;
                     } while (res.StatusCode == HttpStatusCode.OK);
 
@@ -322,11 +336,14 @@ namespace Microsoft.IIS.Administration.Tests
 
                     Assert.Equal(copyContent, testContent);
                 }
-                finally {
-                    if (webFile != null && webFile["file_info"] != null) {
+                finally
+                {
+                    if (webFile != null && webFile["file_info"] != null)
+                    {
                         Assert.True(client.Delete(Utils.Self(webFile.Value<JObject>("file_info"))));
                     }
-                    if (copyInfo != null) {
+                    if (copyInfo != null)
+                    {
                         Assert.True(client.Delete(Utils.Self(copyInfo.Value<JObject>("file"))));
                     }
                 }
@@ -338,15 +355,15 @@ namespace Microsoft.IIS.Administration.Tests
         {
             string startName = "move_dir_test";
             string destName = "move_dir_dest";
-            var physicalPath = Path.Combine(Configuration.TEST_ROOT_PATH, startName);
-            var destPhysicalPath = Path.Combine(Configuration.TEST_ROOT_PATH, destName);
+            var physicalPath = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, startName);
+            var destPhysicalPath = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, destName);
 
             CreateTestDirectory(physicalPath);
 
             JObject site = null;
             using (HttpClient client = ApiHttpClient.Create()) {
                 Sites.EnsureNoSite(client, FILE_TEST_SITE_NAME);
-                site = Sites.CreateSite(client, FILE_TEST_SITE_NAME, Utils.GetAvailablePort(), physicalPath);
+                site = Sites.CreateSite(_output, client, FILE_TEST_SITE_NAME, Utils.GetAvailablePort(), physicalPath);
 
                 try {
                     var rootDir = Utils.FollowLink(client, site, "files");
@@ -387,15 +404,15 @@ namespace Microsoft.IIS.Administration.Tests
         {
             string startName = "copy_dir_test";
             string destName = "copy_dir_dest";
-            var physicalPath = Path.Combine(Configuration.TEST_ROOT_PATH, startName);
-            var destPhysicalPath = Path.Combine(Configuration.TEST_ROOT_PATH, destName);
+            var physicalPath = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, startName);
+            var destPhysicalPath = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, destName);
 
             CreateTestDirectory(physicalPath);
 
             JObject site = null;
             using (HttpClient client = ApiHttpClient.Create()) {
                 Sites.EnsureNoSite(client, FILE_TEST_SITE_NAME);
-                site = Sites.CreateSite(client, FILE_TEST_SITE_NAME, Utils.GetAvailablePort(), physicalPath);
+                site = Sites.CreateSite(_output, client, FILE_TEST_SITE_NAME, Utils.GetAvailablePort(), physicalPath);
 
                 try {
                     var rootDir = Utils.FollowLink(client, site, "files");
@@ -439,9 +456,11 @@ namespace Microsoft.IIS.Administration.Tests
         [Fact]
         public void RangeUploadDownload()
         {
-            using (HttpClient client = ApiHttpClient.Create()) {
+            using (HttpClient client = ApiHttpClient.Create())
+            using (TestSiteContainer container = new TestSiteContainer(_output, client))
+            {
 
-                JObject site = Sites.GetSite(client, "Default Web Site");
+                JObject site = Sites.GetSite(client, container.SiteName);
 
                 // Create web file
                 var webFile = CreateWebFile(client, site, TEST_FILE_NAME);
@@ -518,9 +537,11 @@ namespace Microsoft.IIS.Administration.Tests
             }
 
 
-            using (HttpClient client = ApiHttpClient.Create()) {
+            using (HttpClient client = ApiHttpClient.Create())
+            using (TestSiteContainer container = new TestSiteContainer(_output, client))
+            {
 
-                JObject site = Sites.GetSite(client, "Default Web Site");
+                JObject site = Sites.GetSite(client, container.SiteName);
 
                 var webFiles = new List<JObject>();
                 var fileInfos = new List<JObject>();
@@ -561,9 +582,11 @@ namespace Microsoft.IIS.Administration.Tests
             var size = 1024 * 1024 * 5;
             var truncateSize = size / 2;
 
-            using (HttpClient client = ApiHttpClient.Create()) {
+            using (HttpClient client = ApiHttpClient.Create())
+            using (TestSiteContainer container = new TestSiteContainer(_output, client))
+            {
 
-                JObject site = Sites.GetSite(client, "Default Web Site");
+                JObject site = Sites.GetSite(client, container.SiteName);
                 var webFile = CreateWebFile(client, site, TEST_FILE_NAME);
                 var fileInfo = Utils.FollowLink(client, webFile.Value<JObject>("file_info"), "self");
 
@@ -591,10 +614,12 @@ namespace Microsoft.IIS.Administration.Tests
         [Fact]
         public void CreateRenameFile()
         {
-            using (HttpClient client = ApiHttpClient.Create()) {
+            using (HttpClient client = ApiHttpClient.Create())
+            using (TestSiteContainer container = new TestSiteContainer(_output, client))
+            {
+                JObject site = Sites.GetSite(client, container.SiteName);
                 JObject target = null;
                 string updatedName = "updated_test_file_name.txt";
-                JObject site = Sites.GetSite(client, "Default Web Site");
 
                 try {
                     var webFile = CreateWebFile(client, site, TEST_FILE_NAME);
@@ -616,10 +641,13 @@ namespace Microsoft.IIS.Administration.Tests
         [Fact]
         public void CreateRenameDirectory()
         {
-            using (HttpClient client = ApiHttpClient.Create()) {
+            using (HttpClient client = ApiHttpClient.Create())
+            using (TestSiteContainer container = new TestSiteContainer(_output, client))
+            { 
+
+                JObject site = Sites.GetSite(client, container.SiteName);
                 JObject target = null;
                 string updatedName = "updated_test_folder_name";
-                JObject site = Sites.GetSite(client, "Default Web Site");
 
                 try {
                     var webFile = CreateWebFile(client, site, TEST_FILE_NAME, "directory");
@@ -640,7 +668,7 @@ namespace Microsoft.IIS.Administration.Tests
         [Fact]
         public void CoreFileRange()
         {
-            var physicalPath = Path.Combine(Configuration.TEST_ROOT_PATH, "api_file_range_test");
+            var physicalPath = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, "api_file_range_test");
             if (Directory.Exists(physicalPath)) {
                 Directory.Delete(physicalPath, true);
             }
@@ -658,7 +686,7 @@ namespace Microsoft.IIS.Administration.Tests
                         File.Create(Path.Combine(physicalPath, file)).Dispose();
                     }
 
-                    JObject folder = client.Get($"{Configuration.TEST_SERVER_URL}/api/files?physical_path={physicalPath}");
+                    JObject folder = client.Get($"{Configuration.Instance().TEST_SERVER_URL}/api/files?physical_path={physicalPath}");
 
                     HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Get, Utils.GetLink(folder, "files"));
                     req.Headers.Add("Range", "files=1-3");
@@ -680,7 +708,7 @@ namespace Microsoft.IIS.Administration.Tests
         [Fact]
         public void WebFileRange()
         {
-            var physicalPath = Path.Combine(Configuration.TEST_ROOT_PATH, "web_file_range_test");
+            var physicalPath = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, "web_file_range_test");
             if (Directory.Exists(physicalPath)) {
                 Directory.Delete(physicalPath, true);
                 Directory.CreateDirectory(physicalPath);
@@ -693,7 +721,7 @@ namespace Microsoft.IIS.Administration.Tests
                     var files = new List<string>() { "file1.txt", "file2.txt", "file3.txt", "file4.txt" };
 
                     Sites.EnsureNoSite(client, FILE_TEST_SITE_NAME);
-                    site = Sites.CreateSite(client, FILE_TEST_SITE_NAME, Utils.GetAvailablePort(), physicalPath);
+                    site = Sites.CreateSite(_output, client, FILE_TEST_SITE_NAME, Utils.GetAvailablePort(), physicalPath);
 
                     Assert.NotNull(site);
 
@@ -755,7 +783,7 @@ namespace Microsoft.IIS.Administration.Tests
             using (HttpClient client = ApiHttpClient.Create()) {
                 try {
 
-                    location = client.Post($"{Configuration.TEST_SERVER_URL}{LOCATIONS_PATH}", body);
+                    location = client.Post($"{Configuration.Instance().TEST_SERVER_URL}{LOCATIONS_PATH}", body);
 
                     Assert.Equal(location.Value<string>("alias"), string.Empty);
                     Assert.Equal(location.Value<string>("path"), physicalPath);
@@ -763,11 +791,12 @@ namespace Microsoft.IIS.Administration.Tests
                     var claims = location["claims"].ToObject<IEnumerable<string>>();
                     Assert.True(Enumerable.SequenceEqual<string>(claims, new string[] { "read", "write" }));
 
-                    expanded = client.Get($"{Configuration.TEST_SERVER_URL}{FILES_PATH}")["files"]
+                    expanded = client.Get($"{Configuration.Instance().TEST_SERVER_URL}{FILES_PATH}")["files"]
                                             .ToObject<IEnumerable<JObject>>()
                                             .First(o => o.Value<string>("name").Equals(Path.GetFileName(physicalPath)))
                                             .Value<string>("physical_path");
-
+                    // Sometime this is delayed
+                    Task.Delay(100).Wait();
                     Assert.True(Directory.Exists(expanded));
 
                     body = JObject.FromObject(new {
@@ -786,7 +815,7 @@ namespace Microsoft.IIS.Administration.Tests
                     claims = location["claims"].ToObject<IEnumerable<string>>();
                     Assert.True(Enumerable.SequenceEqual<string>(claims, new string[] { "read" }));
 
-                    expanded2 = client.Get($"{Configuration.TEST_SERVER_URL}{FILES_PATH}")["files"]
+                    expanded2 = client.Get($"{Configuration.Instance().TEST_SERVER_URL}{FILES_PATH}")["files"]
                                             .ToObject<IEnumerable<JObject>>()
                                             .First(o => o.Value<string>("name").Equals(Path.GetFileName(physicalPath2)))
                                             .Value<string>("physical_path");
@@ -795,7 +824,7 @@ namespace Microsoft.IIS.Administration.Tests
 
                     client.Delete(Utils.Self(location));
 
-                    var locationsObj = client.Get($"{Configuration.TEST_SERVER_URL}{LOCATIONS_PATH}");
+                    var locationsObj = client.Get($"{Configuration.Instance().TEST_SERVER_URL}{LOCATIONS_PATH}");
 
                     IEnumerable<JObject> locations = locationsObj["locations"].ToObject<IEnumerable<JObject>>();
 
@@ -932,7 +961,7 @@ namespace Microsoft.IIS.Administration.Tests
             };
 
             // Create web file
-            var file = client.Post($"{Configuration.TEST_SERVER_URL}{FILES_PATH}", newFile);
+            var file = client.Post($"{Configuration.Instance().TEST_SERVER_URL}{FILES_PATH}", newFile);
 
             Assert.True(file != null);
 
@@ -1003,6 +1032,32 @@ namespace Microsoft.IIS.Administration.Tests
             }
 
             return true;
+        }
+    }
+
+    class TestSiteContainer : IDisposable
+    {
+        public const string TEST_SITE_NAME = "test_site";
+        public const int TEST_PORT = 50306;
+        public static readonly string TEST_SITE_PATH = Path.Combine(Configuration.Instance().TEST_ROOT_PATH, TEST_SITE_NAME);
+        public static readonly string SITE_URL = $"{Configuration.Instance().TEST_SERVER_URL}/api/webserver/websites";
+
+        public readonly string SiteName = TEST_SITE_NAME;
+        private readonly string testSiteUri;
+        private readonly HttpClient client;
+
+        public TestSiteContainer(ITestOutputHelper output, HttpClient client)
+        {
+            this.client = client;
+            Sites.EnsureNoSite(client, TEST_SITE_NAME);
+            JObject site = Sites.CreateSite(output, client, TEST_SITE_NAME, TEST_PORT, TEST_SITE_PATH);
+            Assert.NotNull(site);
+            testSiteUri = $"{SITE_URL}/{site.Value<string>("id")}";
+        }
+
+        public void Dispose()
+        {
+            Sites.DeleteSite(client, testSiteUri);
         }
     }
 }

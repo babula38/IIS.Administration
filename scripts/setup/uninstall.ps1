@@ -17,7 +17,11 @@ Param(
     
     [parameter()]
     [switch]
-    $KeepFiles
+    $KeepFiles,
+
+    [parameter()]
+    [switch]
+    $KeepGroups
 )
 
 .\require.ps1 Is-Administrator
@@ -25,6 +29,7 @@ Param(
 function Uninstall($_path)
 {
     $adminRoot = $_path
+    Write-Verbose "Uninistalling from $adminRoot"
 
 	if (!(.\config.ps1 Exists -Path $adminRoot)) { 
 		throw "Cannot find setup.config file for uninstall. Cannot continue"
@@ -32,7 +37,7 @@ function Uninstall($_path)
 
     $installedSettings = .\config.ps1 Get -Path $adminRoot
 
-    if ($Port -eq 0) {
+    if (!$Port) {
         $Port = $installedSettings.Port
     }
 
@@ -63,7 +68,7 @@ function Uninstall($_path)
     }
 
     if ($DeleteBinding) {
-        Write-Verbose "Deleting SSL binding"
+        Write-Verbose "Deleting SSL binding for port: $Port"
         .\net.ps1 DeleteSslBinding -Port $Port
     }
 
@@ -83,7 +88,7 @@ function Uninstall($_path)
                 .\security.ps1 Add-FullControl -Path $InstallationDirectory.FullName -Identity $system -Recurse
             }
             catch {
-                Write-Warning "Unable to obtain full control of installation directory"
+                Write-Warning "Unable to obtain full control of installation directory: $($_.Exception.Message)"
             }
         }
 
@@ -117,10 +122,20 @@ function Uninstall($_path)
                 .\files.ps1 Remove-ItemForced -Path $setupConfig -ErrorAction Stop
             }
             catch {
-                Write-Warning "Could not remove installation configuration file"
+                Write-Warning "Could not remove installation configuration file: $($_.Exception.Message)"
             }
         }
     }
+
+    $groupName = .\globals.ps1 'IIS_ADMIN_API_OWNERS'
+    $group = .\security.ps1 GetLocalGroup -Name $groupName
+    $installerFlag = .\globals.ps1 'INSTALLER_FLAG'
+    if (!$KeepGroups) {
+        if ($group -and $group.Description.Contains($installerFlag)) {
+            .\security.ps1 RemoveLocalGroup -Name $groupName
+        }
+    }
+
     exit 0
 }
 

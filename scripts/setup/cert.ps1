@@ -10,7 +10,8 @@ Param (
                  "AddToTrusted",
                  "Create",
                  "Get-IISAdminCertificates",
-                 "Get-LatestIISAdminCertificate")]
+                 "Get-LatestIISAdminCertificate",
+                 "Is-IISAdminCertificate")]
     [string]
     $Command,
     
@@ -117,6 +118,7 @@ function New($_name)
     $dnsNames = @()
     $dnsNames += "localhost"
 	$dnsNames += hostname
+	$dnsNames += [System.Net.Dns]::GetHostByName($(hostname)).HostName
 	$dnsNames += "$_name"
 	return Create-SelfSignedCertificate "localhost" $_name $dnsNames -ErrorAction Stop
 }
@@ -180,7 +182,7 @@ function Create-SelfSignedCertificate($_subject, $_friendlyName, $_alternativeNa
     $cert.InitializeFromPrivateKey(2, $key, "")
     $cert.Subject = $subjectDn
     $cert.Issuer = $issuerDn
-    $cert.NotBefore = (get-date).AddMinutes(-10)
+    $cert.NotBefore = (get-date).ToUniversalTime().AddMinutes(-10)
     $cert.NotAfter = $cert.NotBefore.AddYears(2)
     #Use Sha256
     $hashAlgorithm = New-Object -ComObject X509Enrollment.CObjectId
@@ -292,6 +294,27 @@ function Get-IISAdminCerts {
     $adminCerts
 }
 
+# Tests whether a provided certificate is an IIS Administration generated certificate.
+# Thumbprint: Used to filter the certificate by its thumbprint (hash).
+function Is-IISAdminCert($_thumbprint) {
+
+    $ret = $false
+
+    $certs = Get-IISAdminCerts
+    
+    foreach ($cert in $certs) {
+
+      if ($cert.Thumbprint -eq $_thumbprint) {
+          
+          $ret = $true
+
+          break
+      }
+    }
+
+    $ret
+}
+
 function Get-LatestIISAdminCert {
     $cert = $null
     $certs = Get-IISAdminCerts
@@ -320,6 +343,10 @@ switch ($Command)
     "Get-LatestIISAdminCertificate"
     {
         return Get-LatestIISAdminCert
+    }
+    "Is-IISAdminCertificate"
+    {
+        return Is-IISAdminCert $Thumbprint
     }
     "Delete"
     {
